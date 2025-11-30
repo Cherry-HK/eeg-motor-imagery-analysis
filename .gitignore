@@ -29,3 +29,10 @@ MNE-Python-*.sh
 # OS files
 .DS_Store
 Thumbs.db
+
+# Currently, uploaded output model file .pkl as a sample and other visualization files
+# Data files (optional - uncomment if you don't want to upload data)
+# data/
+# *.fif
+# *.set
+# *.edf
