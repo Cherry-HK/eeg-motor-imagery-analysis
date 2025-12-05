@@ -22,6 +22,9 @@ from preprocessing import (
 from features import extract_csp_features
 from classification import (
     create_csp_lda_pipeline,
+    create_csp_logistic_pipeline,
+    create_csp_svm_pipeline,
+    create_csp_rf_pipeline,
     train_and_evaluate,
     evaluate_on_test_set,
     compare_classifiers,
@@ -39,6 +42,7 @@ from visualization import (
 def run_single_subject_analysis(
     subject: int,
     task_type: str = 'imagery_left_right',
+    classifier: str = 'lda',
     apply_ica: bool = False,
     output_dir: str = '../outputs',
     data_path: str = None,
@@ -53,6 +57,8 @@ def run_single_subject_analysis(
         Subject number (1-109)
     task_type : str
         Type of motor imagery task
+    classifier : str
+        Type of classifier to use ('lda', 'logistic', 'svm', 'rf')
     apply_ica : bool
         Whether to apply ICA for artifact removal
     output_dir : str
@@ -120,8 +126,24 @@ def run_single_subject_analysis(
         print("STEP 2: CLASSIFICATION")
         print("-" * 70)
 
-    # Create pipeline
-    pipeline = create_csp_lda_pipeline(n_components=4)
+    # Create pipeline based on classifier choice
+    if classifier.lower() == 'lda':
+        pipeline = create_csp_lda_pipeline(n_components=4)
+        clf_name = 'LDA'
+    elif classifier.lower() in ['logistic', 'logreg', 'lr']:
+        pipeline = create_csp_logistic_pipeline(n_components=4, C=1.0, penalty='l2')
+        clf_name = 'Logistic Regression'
+    elif classifier.lower() == 'svm':
+        pipeline = create_csp_svm_pipeline(n_components=4, kernel='rbf')
+        clf_name = 'SVM (RBF)'
+    elif classifier.lower() == 'rf':
+        pipeline = create_csp_rf_pipeline(n_components=4)
+        clf_name = 'Random Forest'
+    else:
+        raise ValueError(f"Unknown classifier: {classifier}. Choose from: lda, logistic, svm, rf")
+
+    if verbose:
+        print(f"\nUsing classifier: {clf_name}")
 
     # Cross-validation
     if verbose:
@@ -370,6 +392,14 @@ def main():
     )
 
     parser.add_argument(
+        '--classifier',
+        type=str,
+        default='lda',
+        choices=['lda', 'logistic', 'logreg', 'lr', 'svm', 'rf'],
+        help='Classifier to use (lda, logistic/logreg/lr, svm, rf). Default: lda'
+    )
+
+    parser.add_argument(
         '--ica',
         action='store_true',
         help='Apply ICA for artifact removal'
@@ -427,6 +457,7 @@ def main():
         run_single_subject_analysis(
             subject=args.subject,
             task_type=args.task,
+            classifier=args.classifier,
             apply_ica=args.ica,
             output_dir=args.output,
             data_path=args.data_path,

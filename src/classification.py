@@ -9,6 +9,7 @@ import numpy as np
 import mne
 from sklearn.pipeline import Pipeline
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import (
@@ -134,6 +135,80 @@ def create_csp_rf_pipeline(
         ('RF', RandomForestClassifier(
             n_estimators=n_estimators,
             max_depth=max_depth,
+            random_state=random_state
+        ))
+    ])
+
+    return pipeline
+
+
+def create_csp_logistic_pipeline(
+    n_components: int = 4,
+    reg: Optional[str] = None,
+    C: float = 1.0,
+    penalty: str = 'l2',
+    solver: str = 'lbfgs',
+    max_iter: int = 1000,
+    random_state: int = 42
+) -> Pipeline:
+    """
+    Create a CSP + Logistic Regression classification pipeline.
+
+    Logistic Regression is a linear classifier that models the probability
+    of class membership. It's computationally efficient and works well with
+    CSP features for motor imagery classification.
+
+    Parameters
+    ----------
+    n_components : int
+        Number of CSP components (default: 4)
+    reg : str, optional
+        CSP regularization method ('shrinkage', 'ledoit_wolf', or None)
+    C : float
+        Inverse of regularization strength (default: 1.0)
+        Smaller values specify stronger regularization
+    penalty : str
+        Type of penalty/regularization ('l1', 'l2', 'elasticnet', or 'none')
+        Default: 'l2' (Ridge regression)
+    solver : str
+        Algorithm to use in the optimization problem
+        Options: 'lbfgs', 'liblinear', 'newton-cg', 'sag', 'saga'
+        Default: 'lbfgs' (works well for small datasets)
+    max_iter : int
+        Maximum number of iterations (default: 1000)
+    random_state : int
+        Random seed for reproducibility (default: 42)
+
+    Returns
+    -------
+    pipeline : Pipeline
+        Scikit-learn pipeline with CSP and Logistic Regression
+
+    Examples
+    --------
+    >>> # Create basic pipeline
+    >>> pipeline = create_csp_logistic_pipeline()
+    >>>
+    >>> # Create pipeline with L1 regularization for feature selection
+    >>> pipeline = create_csp_logistic_pipeline(penalty='l1', solver='saga')
+    >>>
+    >>> # Create pipeline with stronger regularization
+    >>> pipeline = create_csp_logistic_pipeline(C=0.1)
+
+    Notes
+    -----
+    - For L1 penalty, use 'liblinear' or 'saga' solver
+    - For L2 penalty, 'lbfgs' is recommended (faster)
+    - Logistic Regression requires scaled features, but CSP log-transformed
+      features are already on similar scales
+    """
+    pipeline = Pipeline([
+        ('CSP', CSP(n_components=n_components, reg=reg, log=True, norm_trace=False)),
+        ('LogisticRegression', LogisticRegression(
+            C=C,
+            penalty=penalty,
+            solver=solver,
+            max_iter=max_iter,
             random_state=random_state
         ))
     ])
@@ -490,6 +565,7 @@ def compare_classifiers(
     # Define classifiers to compare
     classifiers = {
         'CSP+LDA': create_csp_lda_pipeline(),
+        'CSP+LogisticRegression': create_csp_logistic_pipeline(),
         'CSP+SVM(RBF)': create_csp_svm_pipeline(kernel='rbf'),
         'CSP+SVM(Linear)': create_csp_svm_pipeline(kernel='linear'),
         'CSP+RandomForest': create_csp_rf_pipeline()
@@ -549,7 +625,7 @@ def get_feature_importance(
 
     # Extract importance based on classifier type
     if hasattr(classifier, 'coef_'):
-        # Linear models (LDA, LinearSVM)
+        # Linear models (LDA, Logistic Regression, LinearSVM)
         importance = np.abs(classifier.coef_).flatten()
     elif hasattr(classifier, 'feature_importances_'):
         # Tree-based models (RandomForest)
