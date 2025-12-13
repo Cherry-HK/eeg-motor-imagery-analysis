@@ -28,7 +28,7 @@ def load_eeg_data(
     subject : int
         Subject number (1-109)
     runs : list of int
-        List of run numbers to load
+        List of run numbers to load (1-14)
     data_path : str, optional
         Path to store/load data. If None, uses default MNE data directory
 
@@ -36,7 +36,26 @@ def load_eeg_data(
     -------
     raw : mne.io.Raw
         Concatenated raw EEG data
+
+    Raises
+    ------
+    ValueError
+        If subject number is not in range 1-109
+        If any run number is not in range 1-14
     """
+    # Input validation
+    if not (1 <= subject <= 109):
+        raise ValueError(
+            f"Subject must be between 1 and 109 (inclusive), got {subject}"
+        )
+
+    if not all(1 <= run <= 14 for run in runs):
+        invalid_runs = [r for r in runs if not (1 <= r <= 14)]
+        raise ValueError(
+            f"All run numbers must be between 1 and 14 (inclusive). "
+            f"Invalid runs: {invalid_runs}"
+        )
+
     if data_path is None:
         data_path = str(Path.home() / 'mne_data')
 
@@ -94,6 +113,7 @@ def apply_filtering(
         l_freq=l_freq,
         h_freq=h_freq,
         fir_design='firwin',
+        picks='eeg',
         verbose=False
     )
 
@@ -101,6 +121,7 @@ def apply_filtering(
     if notch_freq is not None:
         raw.notch_filter(
             freqs=notch_freq,
+            picks='eeg',
             verbose=False
         )
 
@@ -122,17 +143,26 @@ def apply_reference(
     ref_type : str
         Type of reference to apply:
         - 'average': Average reference (CAR - Common Average Reference)
-        - 'mastoid': Mastoid reference (A1, A2 or TP9, TP10)
+        - 'mastoid': Linked-ears reference using Tp7/Tp8 (EEGBCI) or A1/A2
         - 'custom': Custom reference using specified channels
         Default: 'average'
     ref_channels : list of str, optional
         Channel names for custom reference (used when ref_type='custom')
-        For mastoid reference, defaults to ['A1', 'A2'] or ['TP9', 'TP10']
+        For mastoid reference, will auto-detect available channels
 
     Returns
     -------
     raw : mne.io.Raw
         Re-referenced raw EEG data
+
+    Notes
+    -----
+    For EEGBCI dataset, 'mastoid' reference uses Tp7/Tp8 (linked-ears)
+    as true mastoid channels (A1/A2) are not recorded. This is the closest
+    anatomical alternative to traditional mastoid referencing.
+
+    Re-referencing is applied BEFORE filtering to avoid interpolation artifacts
+    in the filtered signal.
     """
     if ref_type == 'average':
         # Apply common average reference (CAR)
@@ -140,21 +170,39 @@ def apply_reference(
         logger.info("Applied average reference (CAR)")
 
     elif ref_type == 'mastoid':
-        # Try to use mastoid channels
+        # Try to use mastoid or linked-ears channels
         if ref_channels is None:
-            # Try standard mastoid channel names
             available_channels = raw.ch_names
+
+            # Priority 1: True mastoid channels (A1, A2)
             if 'A1' in available_channels and 'A2' in available_channels:
                 ref_channels = ['A1', 'A2']
+                logger.info("Using true mastoid channels (A1, A2)")
+
+            # Priority 2: Alternative mastoid (TP9, TP10)
             elif 'TP9' in available_channels and 'TP10' in available_channels:
                 ref_channels = ['TP9', 'TP10']
+                logger.info("Using alternative mastoid channels (TP9, TP10)")
+
+            # Priority 3: EEGBCI linked-ears (Tp7, Tp8)
+            elif 'Tp7' in available_channels and 'Tp8' in available_channels:
+                ref_channels = ['Tp7', 'Tp8']
+                logger.info(
+                    "Using linked-ears reference (Tp7, Tp8) - "
+                    "EEGBCI dataset does not have dedicated mastoid channels. "
+                    "Tp7/Tp8 provide closest anatomical alternative."
+                )
+
             else:
-                logger.warning("Mastoid channels not found. Falling back to average reference.")
+                logger.warning(
+                    "No suitable reference channels found (A1/A2, TP9/TP10, or Tp7/Tp8). "
+                    "Falling back to average reference (CAR)."
+                )
                 raw.set_eeg_reference(ref_channels='average', projection=False, verbose=False)
                 return raw
 
         raw.set_eeg_reference(ref_channels=ref_channels, projection=False, verbose=False)
-        logger.info(f"Applied mastoid reference using {ref_channels}")
+        logger.info(f"Applied reference using {ref_channels}")
 
     elif ref_type == 'custom':
         if ref_channels is None:
@@ -487,14 +535,23 @@ def preprocess_pipeline(
     """
     Complete preprocessing pipeline for EEG motor imagery data.
 
+    Pipeline order (following MNE best practices):
+    1. Load data
+    2. Re-reference (optional) - BEFORE filtering to avoid interpolation artifacts
+    3. Filter (bandpass + notch)
+    4. ICA artifact removal (optional) - on filtered continuous data
+    5. Epoch creation
+    6. Bad epoch rejection (optional)
+
     Parameters
     ----------
     subject : int
         Subject number (1-109)
     runs : list of int
-        List of run numbers to load
+        List of run numbers to load (1-14)
     event_id : dict
         Dictionary mapping event names to event codes
+        Example: {'left_fist': 1, 'right_fist': 2}
     data_path : str, optional
         Path to store/load data
     apply_ica : bool
@@ -507,20 +564,23 @@ def preprocess_pipeline(
     ref_type : str, optional
         Type of re-referencing: 'average', 'mastoid', 'custom'
         If None, no re-referencing is applied (default: None)
+        Note: Re-referencing is applied BEFORE filtering
     l_freq : float
-        Low cutoff frequency in Hz
+        Low cutoff frequency in Hz (default: 7 Hz for Mu band)
     h_freq : float
-        High cutoff frequency in Hz
+        High cutoff frequency in Hz (default: 30 Hz for Beta band)
     notch_freq : float, optional
-        Frequency for notch filter in Hz
+        Frequency for notch filter in Hz (default: 60 Hz for US power line)
+        Set to None to skip notch filtering
     tmin : float
-        Start time before event in seconds
+        Start time before event in seconds (default: -1.0)
     tmax : float
-        End time after event in seconds
+        End time after event in seconds (default: 4.0)
     baseline : tuple of float
-        Baseline correction interval
+        Baseline correction interval (default: (-1.0, 0.0))
     reject : dict, optional
         Rejection parameters for bad epochs
+        Example: {'eeg': 100e-6}
     verbose : bool
         Whether to print progress information
 
@@ -530,26 +590,50 @@ def preprocess_pipeline(
         Preprocessed epoched data
     raw : mne.io.Raw
         Preprocessed raw data (for visualization)
+
+    Notes
+    -----
+    Pipeline Order Rationale:
+    - Re-referencing before filtering prevents interpolation artifacts in filtered signal
+    - Filtering before ICA removes slow drifts that waste ICA components
+    - ICA on continuous data provides better decomposition than on epochs
+    - Epoch rejection is final quality control after all preprocessing
+
+    Examples
+    --------
+    >>> # Basic preprocessing without ICA
+    >>> epochs, raw = preprocess_pipeline(
+    ...     subject=1,
+    ...     runs=[4, 8, 12],
+    ...     event_id={'left_fist': 1, 'right_fist': 2}
+    ... )
+    >>> # With ICA and average reference
+    >>> epochs, raw = preprocess_pipeline(
+    ...     subject=1,
+    ...     runs=[4, 8, 12],
+    ...     event_id={'left_fist': 1, 'right_fist': 2},
+    ...     use_enhanced_ica=True,
+    ...     ref_type='average'
+    ... )
     """
     if verbose:
         print(f"Loading data for subject {subject}, runs {runs}...")
 
-    # Load data
+    # Step 1: Load data
     raw = load_eeg_data(subject, runs, data_path)
 
-    if verbose:
-        print(f"Applying filtering (bandpass: {l_freq}-{h_freq} Hz)...")
-
-    # Apply filtering
-    raw = apply_filtering(raw, l_freq, h_freq, notch_freq)
-
-    # Optional re-referencing
+    # Step 2: Re-reference BEFORE filtering (to avoid interpolation artifacts)
     if ref_type is not None:
         if verbose:
             print(f"Applying {ref_type} reference...")
         raw = apply_reference(raw, ref_type=ref_type)
 
-    # Optional ICA artifact removal
+    # Step 3: Apply filtering
+    if verbose:
+        print(f"Applying filtering (bandpass: {l_freq}-{h_freq} Hz)...")
+    raw = apply_filtering(raw, l_freq, h_freq, notch_freq)
+
+    # Step 4: Optional ICA artifact removal (on filtered continuous data)
     if use_enhanced_ica or apply_ica:
         if verbose:
             if use_enhanced_ica:
@@ -568,13 +652,12 @@ def preprocess_pipeline(
         if verbose:
             print(f"  Excluded {artifact_report['total_excluded']} ICA components")
 
+    # Step 5: Create epochs
     if verbose:
         print("Creating epochs...")
-
-    # Create epochs
     epochs = create_epochs(raw, event_id, tmin, tmax, baseline, reject)
 
-    # Optional automatic bad epoch rejection
+    # Step 6: Optional automatic bad epoch rejection
     if use_autoreject:
         if verbose:
             print("Applying automatic bad epoch rejection...")
